@@ -22,6 +22,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.KeyEvent
@@ -91,6 +92,8 @@ class MapperService : AccessibilityService() {
     private var camRecenter = false
     private var lastButtons = 0
     private var captured = false
+    private var hasFocusWin = false
+    private var capKind = "a11y"
     private var cap: CapView? = null
 
     private var keyMsg = "-"
@@ -160,16 +163,32 @@ class MapperService : AccessibilityService() {
 
     // pointer-capture window: a 1x1 untouchable window that holds focus so we get relative mouse motion
     private inner class CapView(c: Context) : View(c) {
+        private val retry = object : Runnable {
+            override fun run() {
+                if (isAttachedToWindow && cap === this@CapView) {
+                    if (!captured) { requestFocus(); requestPointerCapture() }
+                    postDelayed(this, 500)
+                }
+            }
+        }
         init {
             isFocusable = true
             isFocusableInTouchMode = true
         }
         override fun onAttachedToWindow() {
             super.onAttachedToWindow()
+            requestFocus()
             requestPointerCapture()
+            postDelayed(retry, 500)
+        }
+        override fun onDetachedFromWindow() {
+            removeCallbacks(retry)
+            super.onDetachedFromWindow()
         }
         override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
             super.onWindowFocusChanged(hasWindowFocus)
+            hasFocusWin = hasWindowFocus
+            updateDiag()
             if (hasWindowFocus) requestPointerCapture()
         }
         override fun onPointerCaptureChange(hasCapture: Boolean) {
@@ -272,8 +291,8 @@ class MapperService : AccessibilityService() {
     private fun btnAlpha(b: Bind, active: Boolean): Float =
         if (editing) 1f else if (cfg.hide) 0f else if (active) 1f else b.a
 
-    private fun lp(w: Int, h: Int, flags: Int): WLP =
-        WLP(w, h, WLP.TYPE_ACCESSIBILITY_OVERLAY, flags, PixelFormat.TRANSLUCENT).apply {
+    private fun lp(w: Int, h: Int, flags: Int, type: Int = WLP.TYPE_ACCESSIBILITY_OVERLAY): WLP =
+        WLP(w, h, type, flags, PixelFormat.TRANSLUCENT).apply {
             gravity = Gravity.TOP or Gravity.START
             if (Build.VERSION.SDK_INT >= 28) layoutInDisplayCutoutMode = WLP.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
@@ -289,8 +308,14 @@ class MapperService : AccessibilityService() {
         updateDiag()
     }
 
+    private fun mouseState(): String {
+        if (cap == null) return "mouse: off"
+        val st = if (captured) "captured" else if (!hasFocusWin) "not captured (window has no focus)" else "not captured"
+        return "mouse: " + st + " [" + capKind + "]"
+    }
+
     private fun diagText(): String =
-        "last key: " + keyMsg + "\n" + resMsg + "  \u00B7  mouse " + (if (captured) "captured" else "not captured")
+        "key: " + keyMsg + "  \u00B7  " + resMsg + "  \u00B7  " + mouseState()
 
     private fun updateDiag() { tvDiag?.text = diagText() }
 
@@ -328,23 +353,23 @@ class MapperService : AccessibilityService() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = rounded(CARD, 14)
-            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = rounded(CARD, 12)
+            setPadding(dp(10), dp(7), dp(10), dp(7))
         }
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(tv(title, 14f, TXT, true))
-            addView(tv(sub, 11f, DIM))
+            addView(tv(title, 13f, TXT, true))
+            addView(tv(sub, 10f, DIM))
         }
         row.addView(col, LinearLayout.LayoutParams(0, WC, 1f))
-        val track = FrameLayout(this).apply { background = rounded(if (value) ACCENT else OFFTRACK, 14) }
+        val track = FrameLayout(this).apply { background = rounded(if (value) ACCENT else OFFTRACK, 12) }
         val thumb = View(this).apply {
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) }
         }
-        val tlp = FrameLayout.LayoutParams(dp(22), dp(22), (if (value) Gravity.END else Gravity.START) or Gravity.CENTER_VERTICAL)
+        val tlp = FrameLayout.LayoutParams(dp(18), dp(18), (if (value) Gravity.END else Gravity.START) or Gravity.CENTER_VERTICAL)
         tlp.setMargins(dp(3), 0, dp(3), 0)
         track.addView(thumb, tlp)
-        row.addView(track, LinearLayout.LayoutParams(dp(48), dp(28)))
+        row.addView(track, LinearLayout.LayoutParams(dp(40), dp(24)))
         row.setOnClickListener { set(!value) }
         return row
     }
@@ -353,12 +378,12 @@ class MapperService : AccessibilityService() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = rounded(CARD, 14)
-            setPadding(dp(14), dp(8), dp(8), dp(8))
+            background = rounded(CARD, 12)
+            setPadding(dp(10), dp(4), dp(6), dp(4))
         }
-        row.addView(tv(title, 14f, TXT, true), LinearLayout.LayoutParams(0, WC, 1f))
+        row.addView(tv(title, 13f, TXT, true), LinearLayout.LayoutParams(0, WC, 1f))
         row.addView(pill("\u2212", 0xFF3A3947.toInt(), TXT, true) { minus() })
-        row.addView(tv(value, 14f, ACCENT, true).apply { gravity = Gravity.CENTER; minWidth = dp(44) })
+        row.addView(tv(value, 13f, ACCENT, true).apply { gravity = Gravity.CENTER; minWidth = dp(34) })
         row.addView(pill("+", 0xFF3A3947.toInt(), TXT, true) { plus() })
         return row
     }
@@ -378,20 +403,20 @@ class MapperService : AccessibilityService() {
         if (editing) setEditing(false, reopen = false)
         if (panelRoot != null) { rebuildPanel(); return }
         val root = FrameLayout(this).apply {
-            setBackgroundColor(0x99000000.toInt())
+            setBackgroundColor(0x22000000)
             setOnClickListener { closePanel() }
         }
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = rounded(BG, 22)
-            setPadding(dp(16), dp(16), dp(16), dp(16))
+            background = rounded(BG, 16)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
             isClickable = true
         }
         val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(card) }
         val (w, _) = screen()
-        val cw = minOf(dp(380), w - dp(24))
+        val cw = minOf(dp(560), w - dp(24))
         val slp = FrameLayout.LayoutParams(cw, WC, Gravity.CENTER)
-        slp.topMargin = dp(16); slp.bottomMargin = dp(16)
+        slp.topMargin = dp(8); slp.bottomMargin = dp(8)
         root.addView(scroll, slp)
         panelRoot = root
         panelCard = card
@@ -414,60 +439,61 @@ class MapperService : AccessibilityService() {
     private fun rebuildPanel() {
         val card = panelCard ?: return
         card.removeAllViews()
+        val (sw, _) = screen()
+        val two = sw >= dp(640)
+
+        fun pair(a: View, b: View?) {
+            if (two) {
+                val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                r.addView(a, LinearLayout.LayoutParams(0, WC, 1f).apply { rightMargin = dp(3) })
+                if (b != null) r.addView(b, LinearLayout.LayoutParams(0, WC, 1f).apply { leftMargin = dp(3) })
+                else r.addView(View(this), LinearLayout.LayoutParams(0, WC, 1f))
+                card.add(r, 6)
+            } else {
+                card.add(a, 6)
+                if (b != null) card.add(b, 6)
+            }
+        }
 
         val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val titles = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(tv("KB Mapper", 20f, TXT, true))
-            addView(tv(if (on) "Mapping is ON" else "Mapping is OFF", 12f, if (on) OKC else DIM))
-        }
-        head.addView(titles, LinearLayout.LayoutParams(0, WC, 1f))
-        head.addView(pill("\u2715") { closePanel() })
+        head.addView(tv("KB Mapper", 16f, TXT, true))
+        head.addView(tv("   " + (if (on) "ON" else "OFF"), 12f, if (on) OKC else DIM, true), LinearLayout.LayoutParams(0, WC, 1f))
+        head.addView(pill("\u2715", CARD, TXT, true) { closePanel() })
         card.addView(head)
 
-        card.add(switchRow("Mapping", "Keyboard & mouse control the game", on) { setOn(it) }, 14)
-        card.add(switchRow("Mouse look", "Mouse moves the camera, buttons & wheel can be bound", cfg.mouseOn) {
+        val mapping = switchRow("Mapping", "Keys & mouse drive the game", on) { setOn(it) }
+        val mouse = switchRow("Mouse look", "Camera follows the mouse", cfg.mouseOn) {
             cfg.mouseOn = it
             cfg.save(this)
             camX = 0f; camY = 0f
             syncCapture()
             rebuildPanel()
-        })
-        if (cfg.mouseOn) {
-            card.add(stepRow("Mouse sensitivity", (Math.round(cfg.sens * 10) / 10.0).toString(),
-                { setSens(-1) }, { setSens(1) }))
         }
-        card.add(switchRow("Hide buttons", "Makes every overlay button invisible (opacity 0)", cfg.hide) {
+        val sens: View? = if (cfg.mouseOn) stepRow("Sensitivity", (Math.round(cfg.sens * 10) / 10.0).toString(),
+            { setSens(-1) }, { setSens(1) }) else null
+        val hide = switchRow("Hide buttons", "Invisible (opacity 0)", cfg.hide) {
             cfg.hide = it
             cfg.save(this)
             applyAlpha()
             rebuildPanel()
-        })
+        }
+        pair(mapping, mouse)
+        if (sens != null) pair(sens, hide) else pair(hide, null)
 
         val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        r.addView(pill("Edit layout", ACCENT, 0xFF1C1B22.toInt()) { setEditing(true) },
-            LinearLayout.LayoutParams(0, WC, 1f).apply { rightMargin = dp(4) })
-        r.addView(pill("Test tap") { testTap() },
-            LinearLayout.LayoutParams(0, WC, 1f).apply { leftMargin = dp(4) })
-        card.add(r, 10)
+        r.addView(pill("Edit layout", ACCENT, 0xFF1C1B22.toInt(), true) { setEditing(true) },
+            LinearLayout.LayoutParams(0, WC, 1f).apply { rightMargin = dp(3) })
+        r.addView(pill("Test tap", CARD, TXT, true) { testTap() },
+            LinearLayout.LayoutParams(0, WC, 1f).apply { leftMargin = dp(3); rightMargin = dp(3) })
+        r.addView(pill("Toggle key: " + short(cfg.toggle), CARD, ACCENT, true) {
+            pendingToggle = true
+            setKeyMsg("press the new toggle key...")
+        }, LinearLayout.LayoutParams(0, WC, 1f).apply { leftMargin = dp(3) })
+        card.add(r, 6)
 
-        val tk = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = rounded(CARD, 14)
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            setOnClickListener {
-                pendingToggle = true
-                setKeyMsg("press the new toggle key...")
-            }
-        }
-        tk.addView(tv("Toggle key", 14f, TXT, true), LinearLayout.LayoutParams(0, WC, 1f))
-        tk.addView(tv(short(cfg.toggle) + "  \u00B7 tap to change", 12f, ACCENT, true))
-        card.add(tk)
-
-        val d = tv(diagText(), 11f, DIM)
+        val d = tv(diagText(), 10f, DIM)
         tvDiag = d
-        card.add(d, 12)
+        card.add(d, 6)
     }
 
     private fun setSens(d: Int) {
@@ -851,7 +877,10 @@ class MapperService : AccessibilityService() {
             val v = CapView(this)
             cap = v
             try {
-                wm.addView(v, lp(1, 1, WLP.FLAG_NOT_TOUCHABLE or WLP.FLAG_LAYOUT_IN_SCREEN or WLP.FLAG_ALT_FOCUSABLE_IM))
+                val useApp = Build.VERSION.SDK_INT >= 26 && Settings.canDrawOverlays(this)
+                capKind = if (useApp) "overlay" else "a11y"
+                val type = if (useApp) WLP.TYPE_APPLICATION_OVERLAY else WLP.TYPE_ACCESSIBILITY_OVERLAY
+                wm.addView(v, lp(1, 1, WLP.FLAG_NOT_TOUCHABLE or WLP.FLAG_LAYOUT_IN_SCREEN or WLP.FLAG_ALT_FOCUSABLE_IM, type))
             } catch (e: Exception) {
                 cap = null
                 setRes("mouse window failed")
@@ -860,6 +889,7 @@ class MapperService : AccessibilityService() {
             cap?.let { try { wm.removeView(it) } catch (_: Exception) {} }
             cap = null
             captured = false
+            hasFocusWin = false
             lastButtons = 0
             updateDiag()
         }

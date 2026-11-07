@@ -11,6 +11,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
@@ -35,6 +36,7 @@ class MainActivity : Activity() {
 
     private lateinit var tvSvc: TextView
     private lateinit var tvNotif: TextView
+    private lateinit var tvOver: TextView
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -89,8 +91,10 @@ class MainActivity : Activity() {
         val status = cardBox()
         tvSvc = text("", 14f, txt, true)
         tvNotif = text("", 14f, txt, true)
+        tvOver = text("", 14f, txt, true)
         status.add(tvSvc, 0)
         status.add(tvNotif, 8)
+        status.add(tvOver, 8)
         status.add(button("Enable service in Accessibility", true) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }, 14)
@@ -103,6 +107,9 @@ class MainActivity : Activity() {
                 startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
             }
         }, 8)
+        status.add(button("Allow 'Display over other apps' (mouse)", false) {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + packageName)))
+        }, 8)
         status.add(button("Open customize menu", false) {
             val s = MapperService.instance
             if (s == null) Toast.makeText(this, "Enable the service first", Toast.LENGTH_SHORT).show()
@@ -114,7 +121,7 @@ class MainActivity : Activity() {
         val how = cardBox()
         how.add(text("How it works", 15f, txt, true), 0)
         how.add(text(
-            "1. Enable the service and allow notifications.\n" +
+            "1. Enable the service, allow notifications and 'Display over other apps' (mouse look needs it).\n" +
                 "2. Open your game. Pull down the shade and tap the KB Mapper notification to open Customize.\n" +
                 "3. Edit layout: drag the circles onto the game's buttons, set their keys. Mouse buttons and the wheel can be bound too: tap Key, then click.\n" +
                 "4. Drag the dashed camera zone over the area where the game rotates the view.\n" +
@@ -192,5 +199,8 @@ class MainActivity : Activity() {
         val nOk = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
         tvNotif.text = if (nOk) "\u25CF  Notifications allowed" else "\u25CF  Notifications blocked (needed for the menu)"
         tvNotif.setTextColor(if (nOk) ok else bad)
+        val ov = Settings.canDrawOverlays(this)
+        tvOver.text = if (ov) "\u25CF  Display over other apps allowed" else "\u25CF  Display over other apps off (needed for mouse look)"
+        tvOver.setTextColor(if (ov) ok else bad)
     }
 }
