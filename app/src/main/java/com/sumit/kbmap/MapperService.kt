@@ -11,6 +11,7 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.KeyEvent
@@ -33,14 +34,19 @@ class MapperService : AccessibilityService() {
     private var cfg = Config.parse(Config.DEFAULT)
     private var on = false
     private var editing = false
+    private var sel: Bind? = null
     private var pending: Bind? = null
-    private var lastBound = -1
+    private var pendingToggle = false
+    private var joyStep = 0
+    private val swallowUp = HashSet<Int>()
+    private val fireDownAt = HashMap<Int, Long>()
     private val pressed = HashSet<Int>()
     private val tapOn = HashSet<Int>()
     private val slots = HashMap<Int, Slot>()
     private val views = HashMap<Bind, View>()
     private var busy = false
     private var dirty = false
+    private var okCount = 0
     private val dur = 80L
 
     private lateinit var layer: FrameLayout
@@ -50,18 +56,52 @@ class MapperService : AccessibilityService() {
     private lateinit var tvOn: TextView
     private lateinit var tvEdit: TextView
     private lateinit var tvKey: TextView
-    private lateinit var addRow: LinearLayout
+    private lateinit var tvRes: TextView
+    private lateinit var tvToggle: TextView
+    private lateinit var tvSel: TextView
+    private lateinit var editBox: LinearLayout
+    private lateinit var selBox: LinearLayout
 
     private val baseFlags = WLP.FLAG_NOT_FOCUSABLE or WLP.FLAG_LAYOUT_IN_SCREEN or WLP.FLAG_LAYOUT_NO_LIMITS
+
+    private val palette = intArrayOf(
+        0xCCA67DF3.toInt(), 0xCCF37D7D.toInt(), 0xCC7DC3F3.toInt(),
+        0xCC7DF3A6.toInt(), 0xCCF3D67D.toInt(), 0xCCFFFFFF.toInt()
+    )
+    private val joyNames = listOf("UP", "LEFT", "DOWN", "RIGHT")
+
+    private val names = mapOf(
+        KeyEvent.KEYCODE_SPACE to "Spc",
+        KeyEvent.KEYCODE_SHIFT_LEFT to "LSh", KeyEvent.KEYCODE_SHIFT_RIGHT to "RSh",
+        KeyEvent.KEYCODE_CTRL_LEFT to "LCt", KeyEvent.KEYCODE_CTRL_RIGHT to "RCt",
+        KeyEvent.KEYCODE_ALT_LEFT to "LAl", KeyEvent.KEYCODE_ALT_RIGHT to "RAl",
+        KeyEvent.KEYCODE_META_LEFT to "Win", KeyEvent.KEYCODE_META_RIGHT to "Win",
+        KeyEvent.KEYCODE_TAB to "Tab", KeyEvent.KEYCODE_CAPS_LOCK to "Cap",
+        KeyEvent.KEYCODE_ESCAPE to "Esc", KeyEvent.KEYCODE_ENTER to "Ent",
+        KeyEvent.KEYCODE_DEL to "Bks", KeyEvent.KEYCODE_FORWARD_DEL to "Del",
+        KeyEvent.KEYCODE_GRAVE to "`", KeyEvent.KEYCODE_MINUS to "-", KeyEvent.KEYCODE_EQUALS to "=",
+        KeyEvent.KEYCODE_LEFT_BRACKET to "[", KeyEvent.KEYCODE_RIGHT_BRACKET to "]",
+        KeyEvent.KEYCODE_BACKSLASH to "\\", KeyEvent.KEYCODE_SEMICOLON to ";",
+        KeyEvent.KEYCODE_APOSTROPHE to "'", KeyEvent.KEYCODE_COMMA to ",",
+        KeyEvent.KEYCODE_PERIOD to ".", KeyEvent.KEYCODE_SLASH to "/",
+        KeyEvent.KEYCODE_DPAD_UP to "\u2191", KeyEvent.KEYCODE_DPAD_DOWN to "\u2193",
+        KeyEvent.KEYCODE_DPAD_LEFT to "\u2190", KeyEvent.KEYCODE_DPAD_RIGHT to "\u2192",
+        KeyEvent.KEYCODE_PAGE_UP to "PgU", KeyEvent.KEYCODE_PAGE_DOWN to "PgD",
+        KeyEvent.KEYCODE_MOVE_HOME to "Hom", KeyEvent.KEYCODE_MOVE_END to "End",
+        KeyEvent.KEYCODE_INSERT to "Ins", KeyEvent.KEYCODE_MENU to "Mnu"
+    )
 
     private val cb = object : GestureResultCallback() {
         override fun onCompleted(g: GestureDescription?) {
             busy = false
+            okCount++
+            if (::tvRes.isInitialized) tvRes.text = "gesture ok x" + okCount
             if (slots.isNotEmpty() || dirty) { dirty = false; refresh() }
         }
         override fun onCancelled(g: GestureDescription?) {
             busy = false
             slots.clear()
+            if (::tvRes.isInitialized) tvRes.text = "gesture CANCELLED"
             if (on && (pressed.isNotEmpty() || tapOn.isNotEmpty())) ui.postDelayed({ refresh() }, 100)
         }
     }
@@ -106,10 +146,17 @@ class MapperService : AccessibilityService() {
         return Pair(dm.widthPixels, dm.heightPixels)
     }
 
+    private fun full(k: Int) = KeyEvent.keyCodeToString(k).removePrefix("KEYCODE_")
+
     private fun short(k: Int): String {
         if (k == 0) return "?"
-        val s = KeyEvent.keyCodeToString(k).removePrefix("KEYCODE_")
-        return if (s.length > 5) s.substring(0, 5) else s
+        names[k]?.let { return it }
+        val s = full(k)
+        return when {
+            s.startsWith("NUMPAD_") -> "N" + s.removePrefix("NUMPAD_")
+            s.length > 4 -> s.substring(0, 4)
+            else -> s
+        }
     }
 
     private fun label(b: Bind): String {
@@ -118,11 +165,24 @@ class MapperService : AccessibilityService() {
         return if (l.all { it.length == 1 }) l.joinToString("") else "JOY"
     }
 
-    private fun chip(t: String, click: () -> Unit) = TextView(this).apply {
+    private fun typeName(b: Bind) = when (b.type) {
+        "tap" -> "Tap"
+        "hold" -> "Hold"
+        "fire" -> "Fire (tap on press+release)"
+        else -> "Joystick"
+    }
+
+    private fun defColor(b: Bind) = when (b.type) {
+        "joystick" -> 2
+        "hold", "fire" -> 1
+        else -> 0
+    }
+
+    private fun chip(t: String, px: Int = 10, click: () -> Unit) = TextView(this).apply {
         text = t
         setTextColor(Color.WHITE)
         textSize = 12f
-        setPadding(dp(10), dp(7), dp(10), dp(7))
+        setPadding(dp(px), dp(7), dp(px), dp(7))
         setOnClickListener { click() }
     }
 
@@ -173,25 +233,72 @@ class MapperService : AccessibilityService() {
 
         tvOn = chip("Mapping: OFF") { setOn(!on) }
         tvEdit = chip("Edit layout") { setEditing(!editing) }
-        addRow = LinearLayout(this).apply {
+
+        val addRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            visibility = View.GONE
-            addView(chip("+Tap") { addBtn("tap") })
-            addView(chip("+Hold") { addBtn("hold") })
-            addView(chip("+Joy") { addBtn("joystick") })
+            addView(chip("+Tap", 7) { addBtn("tap") })
+            addView(chip("+Hold", 7) { addBtn("hold") })
+            addView(chip("+Fire", 7) { addBtn("fire") })
+            addView(chip("+Joy", 7) { addBtn("joystick") })
         }
+        tvToggle = chip("Toggle key: " + short(cfg.toggle), 7) {
+            pendingToggle = true
+            tvKey.text = "Press the new toggle key..."
+        }
+        tvSel = TextView(this).apply {
+            setTextColor(0xFFFFE066.toInt())
+            textSize = 11f
+            setPadding(dp(7), dp(4), dp(7), dp(2))
+        }
+        val r1 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(chip("Key", 7) { sel?.let { startBind(it) } })
+            addView(chip("Type", 7) { selType() })
+            addView(chip("Color", 7) { selColor() })
+            addView(chip("Del", 7) { selDel() })
+        }
+        val r2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(chip("Sz-", 7) { selSize(-1) })
+            addView(chip("Sz+", 7) { selSize(1) })
+            addView(chip("Op-", 7) { selAlpha(-1) })
+            addView(chip("Op+", 7) { selAlpha(1) })
+        }
+        selBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            addView(tvSel)
+            addView(r1)
+            addView(r2)
+        }
+        editBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            addView(addRow)
+            addView(tvToggle)
+            addView(selBox)
+        }
+
         tvKey = TextView(this).apply {
             text = "last key: -"
             setTextColor(0xFFAAAAAA.toInt())
             textSize = 11f
             setPadding(dp(10), dp(4), dp(10), dp(4))
         }
+        tvRes = TextView(this).apply {
+            text = "gesture: -"
+            setTextColor(0xFFAAAAAA.toInt())
+            textSize = 11f
+            setPadding(dp(10), dp(2), dp(10), dp(4))
+        }
 
         hud.addView(handle)
         hud.addView(tvOn)
         hud.addView(tvEdit)
-        hud.addView(addRow)
+        hud.addView(editBox)
         hud.addView(tvKey)
+        hud.addView(tvRes)
+        hud.addView(chip("Test tap") { testTap() })
         wm.addView(hud, hudLp)
     }
 
@@ -200,23 +307,21 @@ class MapperService : AccessibilityService() {
         views.clear()
         val (w, h) = screen()
         cfg.binds.forEach { b ->
-            val size = if (b.type == "joystick") (b.r * minOf(w, h) * 2).toInt() else dp(52)
-            val col = when (b.type) {
-                "joystick" -> 0xCC7DC3F3.toInt()
-                "hold" -> 0xCCF37D7D.toInt()
-                else -> 0xCCA67DF3.toInt()
-            }
+            val joy = b.type == "joystick"
+            val size = if (joy) (b.r * minOf(w, h) * 2).toInt() else dp(b.sz)
+            val col = palette[(if (b.c in palette.indices) b.c else defColor(b))]
+            val selected = editing && b === sel
             val tv = TextView(this).apply {
                 text = label(b)
                 gravity = Gravity.CENTER
                 setTextColor(Color.WHITE)
-                textSize = 12f
+                textSize = if (joy) 12f else (b.sz / 3f).coerceIn(7f, 14f)
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
                     setColor(col)
-                    setStroke(dp(2), Color.WHITE)
+                    setStroke(dp(if (selected) 3 else 1), if (selected) 0xFFFFE066.toInt() else Color.WHITE)
                 }
-                alpha = if (editing) 1f else 0.35f
+                alpha = if (editing) 1f else b.a
             }
             val lp = FrameLayout.LayoutParams(size, size)
             lp.leftMargin = (b.x * w - size / 2f).toInt()
@@ -233,7 +338,6 @@ class MapperService : AccessibilityService() {
         var downX = 0f
         var downY = 0f
         var moved = false
-        var downT = 0L
         v.setOnTouchListener { _, e ->
             val lp = v.layoutParams as FrameLayout.LayoutParams
             when (e.actionMasked) {
@@ -243,7 +347,6 @@ class MapperService : AccessibilityService() {
                     downX = e.rawX
                     downY = e.rawY
                     moved = false
-                    downT = e.eventTime
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (!moved && Math.hypot((e.rawX - downX).toDouble(), (e.rawY - downY).toDouble()) > dp(8)) moved = true
@@ -259,20 +362,67 @@ class MapperService : AccessibilityService() {
                         b.x = ((lp.leftMargin + size / 2f) / w).coerceIn(0f, 1f)
                         b.y = ((lp.topMargin + size / 2f) / h).coerceIn(0f, 1f)
                         cfg.save(this)
-                    } else if (e.eventTime - downT > 600) {
-                        cfg.binds.remove(b)
-                        cfg.save(this)
-                        redrawButtons()
-                    } else if (b.type == "joystick") {
-                        tvKey.text = "Joystick keys: edit JSON in app"
-                    } else {
-                        pending = b
-                        tvKey.text = "Press a key for this button..."
                     }
+                    sel = b
+                    redrawButtons()
+                    updateSel()
                 }
             }
             true
         }
+    }
+
+    // ---------- selected-button customisation ----------
+
+    private fun updateSel() {
+        val b = sel
+        selBox.visibility = if (editing && b != null) View.VISIBLE else View.GONE
+        if (b != null) {
+            val s = if (b.type == "joystick") Math.round(b.r * 100) else b.sz
+            tvSel.text = typeName(b) + "  size " + s + "  opacity " + Math.round(b.a * 10)
+        }
+    }
+
+    private fun changed() { cfg.save(this); redrawButtons(); updateSel() }
+
+    private fun startBind(b: Bind) {
+        pending = b
+        joyStep = 0
+        tvKey.text = if (b.type == "joystick") "Joystick: press UP key" else "Press a key..."
+    }
+
+    private fun selType() {
+        val b = sel ?: return
+        if (b.type == "joystick") { tvKey.text = "Joystick has no type"; return }
+        b.type = when (b.type) { "tap" -> "hold"; "hold" -> "fire"; else -> "tap" }
+        changed()
+    }
+
+    private fun selColor() {
+        val b = sel ?: return
+        val cur = if (b.c in palette.indices) b.c else defColor(b)
+        b.c = (cur + 1) % palette.size
+        changed()
+    }
+
+    private fun selSize(d: Int) {
+        val b = sel ?: return
+        if (b.type == "joystick") b.r = (b.r + d * 0.01f).coerceIn(0.04f, 0.25f)
+        else b.sz = (b.sz + d * 4).coerceIn(20, 90)
+        changed()
+    }
+
+    private fun selAlpha(d: Int) {
+        val b = sel ?: return
+        b.a = (Math.round(b.a * 10) + d).coerceIn(1, 10) / 10f
+        changed()
+    }
+
+    private fun selDel() {
+        val b = sel ?: return
+        cfg.binds.remove(b)
+        sel = null
+        changed()
     }
 
     // ---------- modes ----------
@@ -280,8 +430,10 @@ class MapperService : AccessibilityService() {
     private fun setOn(v: Boolean) {
         if (v && editing) setEditing(false)
         on = v
+        ui.removeCallbacksAndMessages(null)
         pressed.clear()
         tapOn.clear()
+        fireDownAt.clear()
         if (v) cfg = Config.load(this)
         tvOn.text = if (on) "Mapping: ON" else "Mapping: OFF"
         tvOn.setTextColor(if (on) 0xFF7DF3A6.toInt() else Color.WHITE)
@@ -293,51 +445,85 @@ class MapperService : AccessibilityService() {
         if (v && on) setOn(false)
         editing = v
         pending = null
+        pendingToggle = false
+        sel = null
         if (v) cfg = Config.load(this)
         layerLp.flags = if (v) baseFlags else baseFlags or WLP.FLAG_NOT_TOUCHABLE
         layer.setBackgroundColor(if (v) 0x66000000 else 0)
         wm.updateViewLayout(layer, layerLp)
         tvEdit.text = if (v) "Done" else "Edit layout"
-        addRow.visibility = if (v) View.VISIBLE else View.GONE
-        tvKey.text = if (v) "tap: bind key | drag: move | hold: delete" else "last key: -"
+        editBox.visibility = if (v) View.VISIBLE else View.GONE
+        tvToggle.text = "Toggle key: " + short(cfg.toggle)
+        tvKey.text = if (v) "tap a button to select | drag to move" else "last key: -"
         redrawButtons()
+        updateSel()
     }
 
     private fun addBtn(type: String) {
         val j = type == "joystick"
         val b = Bind(
-            type, 0, 0.5f, 0.5f, 0.1f,
+            type, 0, 0.5f, 0.5f, 0.08f,
             if (j) KeyEvent.KEYCODE_W else 0, if (j) KeyEvent.KEYCODE_S else 0,
             if (j) KeyEvent.KEYCODE_A else 0, if (j) KeyEvent.KEYCODE_D else 0
         )
         cfg.binds.add(b)
-        cfg.save(this)
-        redrawButtons()
-        if (!j) {
-            pending = b
-            tvKey.text = "Press a key for the new button..."
-        }
+        sel = b
+        changed()
+        if (!j) startBind(b)
     }
 
     // ---------- keyboard ----------
+
+    private fun pulse(i: Int, delay: Long) {
+        ui.postDelayed({
+            tapOn.add(i)
+            refresh()
+            ui.postDelayed({ tapOn.remove(i); refresh() }, 120)
+        }, delay)
+    }
 
     override fun onKeyEvent(e: KeyEvent): Boolean {
         val k = e.keyCode
         val down = e.action == KeyEvent.ACTION_DOWN
 
+        if (k in swallowUp) {
+            if (!down) swallowUp.remove(k)
+            return true
+        }
+
+        if (down && pendingToggle) {
+            if (e.repeatCount > 0) return true
+            pendingToggle = false
+            cfg.toggle = k
+            cfg.save(this)
+            swallowUp.add(k)
+            tvToggle.text = "Toggle key: " + short(k)
+            tvKey.text = "toggle key set: " + full(k)
+            return true
+        }
+
         val p = pending
         if (p != null && down) {
-            p.key = k
+            if (e.repeatCount > 0) return true
+            swallowUp.add(k)
+            if (p.type == "joystick") {
+                when (joyStep) { 0 -> p.kUp = k; 1 -> p.kLeft = k; 2 -> p.kDown = k; else -> p.kRight = k }
+                joyStep++
+                if (joyStep > 3) { pending = null; tvKey.text = "joystick bound" }
+                else tvKey.text = "Joystick: press " + joyNames[joyStep] + " key"
+            } else {
+                p.key = k
+                pending = null
+                tvKey.text = "bound: " + full(k)
+            }
             cfg.save(this)
-            pending = null
-            lastBound = k
-            tvKey.text = "bound: " + short(k)
             redrawButtons()
             return true
         }
-        if (!down && k == lastBound) { lastBound = -1; return true }
 
-        if (down && e.repeatCount == 0 && p == null) tvKey.text = "last key: " + short(k)
+        if (down && e.repeatCount == 0) {
+            tvKey.text = "last key: " + full(k) + (if (!on && !editing && k in cfg.keys) " (mapping OFF!)" else "")
+        }
 
         if (k == cfg.toggle) {
             if (down && e.repeatCount == 0) {
@@ -347,23 +533,47 @@ class MapperService : AccessibilityService() {
             return true
         }
         if (!on || k !in cfg.keys) return false
+
         if (down) {
             if (e.repeatCount > 0) return true
             pressed.add(k)
             cfg.binds.forEachIndexed { i, b ->
-                if (b.type == "tap" && b.key == k) {
-                    tapOn.add(i)
-                    ui.postDelayed({ tapOn.remove(i); refresh() }, 120)
+                if (b.key == k && (b.type == "tap" || b.type == "fire")) {
+                    if (b.type == "fire") fireDownAt[i] = SystemClock.uptimeMillis()
+                    pulse(i, 0)
                 }
             }
         } else if (e.action == KeyEvent.ACTION_UP) {
             pressed.remove(k)
+            cfg.binds.forEachIndexed { i, b ->
+                if (b.type == "fire" && b.key == k) {
+                    val since = SystemClock.uptimeMillis() - (fireDownAt.remove(i) ?: 0L)
+                    pulse(i, maxOf(0L, 280L - since))
+                }
+            }
         }
         refresh()
         return true
     }
 
     // ---------- touch injection ----------
+
+    private fun testTap() {
+        if (editing) { tvRes.text = "tap Done first"; return }
+        if (busy) { tvRes.text = "busy, try again"; return }
+        val (w, h) = screen()
+        val b = cfg.binds.firstOrNull { it.type != "joystick" } ?: cfg.binds.firstOrNull()
+        if (b == null) { tvRes.text = "no buttons"; return }
+        val p = Path()
+        p.moveTo(b.x * w, b.y * h)
+        val g = GestureDescription.Builder().addStroke(StrokeDescription(p, 0, 100)).build()
+        tvRes.text = "test tap sent"
+        val ok = dispatchGesture(g, object : GestureResultCallback() {
+            override fun onCompleted(x: GestureDescription?) { tvRes.text = "test tap: done" }
+            override fun onCancelled(x: GestureDescription?) { tvRes.text = "test tap: CANCELLED" }
+        }, null)
+        if (!ok) tvRes.text = "test tap: REJECTED"
+    }
 
     private fun refresh() {
         if (busy) { dirty = true; return }
@@ -391,9 +601,9 @@ class MapperService : AccessibilityService() {
                     }
                 }
                 "hold" -> want = b.key in pressed
-                "tap" -> want = i in tapOn
+                "tap", "fire" -> want = i in tapOn
             }
-            views[b]?.alpha = if (want && on) 1f else 0.35f
+            views[b]?.alpha = if (want && on) 1f else b.a
 
             val s = slots[i]
             if (want && on) {
@@ -419,6 +629,6 @@ class MapperService : AccessibilityService() {
         finished.forEach { slots.remove(it) }
         if (n == 0) return
         busy = true
-        if (!dispatchGesture(gb.build(), cb, null)) { busy = false; slots.clear() }
+        if (!dispatchGesture(gb.build(), cb, null)) { busy = false; slots.clear(); tvRes.text = "gesture REJECTED" }
     }
 }

@@ -6,15 +6,18 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class Bind(
-    val type: String,
+    var type: String,
     var key: Int,
     var x: Float,
     var y: Float,
-    val r: Float,
-    val kUp: Int,
-    val kDown: Int,
-    val kLeft: Int,
-    val kRight: Int
+    var r: Float,
+    var kUp: Int,
+    var kDown: Int,
+    var kLeft: Int,
+    var kRight: Int,
+    var sz: Int = 36,
+    var a: Float = 0.35f,
+    var c: Int = -1
 )
 
 class Config(var toggle: Int, val binds: MutableList<Bind>) {
@@ -39,6 +42,9 @@ class Config(var toggle: Int, val binds: MutableList<Bind>) {
             j.put("type", b.type)
             j.put("x", rnd(b.x))
             j.put("y", rnd(b.y))
+            j.put("sz", b.sz)
+            j.put("a", rnd(b.a))
+            j.put("c", b.c)
             if (b.type == "joystick") {
                 j.put("r", rnd(b.r))
                 j.put("up", KeyEvent.keyCodeToString(b.kUp))
@@ -58,13 +64,15 @@ class Config(var toggle: Int, val binds: MutableList<Bind>) {
         const val PREFS = "kb"
         const val KEY = "cfg"
 
-        // x, y = screen fractions (0..1). r = joystick radius as fraction of the shorter screen side.
-        // types: joystick (4 keys), hold (touch while key held), tap (short tap per key press)
+        // x, y = screen fractions (0..1). r = joystick radius (fraction of shorter side). sz = button size in dp.
+        // a = idle opacity (0..1). c = colour index (-1 = default for type).
+        // types: joystick (4 keys) | hold (touch held while key held) | tap (one tap per press)
+        //        fire (tap on press + tap on release: for games where one click toggles continuous fire)
         const val DEFAULT = """{
   "toggle": "KEYCODE_GRAVE",
   "binds": [
-    {"type":"joystick","x":0.15,"y":0.72,"r":0.10,"up":"KEYCODE_W","down":"KEYCODE_S","left":"KEYCODE_A","right":"KEYCODE_D"},
-    {"type":"hold","key":"KEYCODE_SPACE","x":0.88,"y":0.70},
+    {"type":"joystick","x":0.15,"y":0.72,"r":0.08,"up":"KEYCODE_W","down":"KEYCODE_S","left":"KEYCODE_A","right":"KEYCODE_D"},
+    {"type":"fire","key":"KEYCODE_SPACE","x":0.80,"y":0.70},
     {"type":"tap","key":"KEYCODE_R","x":0.80,"y":0.50},
     {"type":"tap","key":"KEYCODE_E","x":0.72,"y":0.40}
   ]
@@ -85,8 +93,9 @@ class Config(var toggle: Int, val binds: MutableList<Bind>) {
                     Bind(
                         b.getString("type"), kc(b, "key"),
                         b.getDouble("x").toFloat(), b.getDouble("y").toFloat(),
-                        b.optDouble("r", 0.1).toFloat(),
-                        kc(b, "up"), kc(b, "down"), kc(b, "left"), kc(b, "right")
+                        b.optDouble("r", 0.08).toFloat(),
+                        kc(b, "up"), kc(b, "down"), kc(b, "left"), kc(b, "right"),
+                        b.optInt("sz", 36), b.optDouble("a", 0.35).toFloat(), b.optInt("c", -1)
                     )
                 )
             }
