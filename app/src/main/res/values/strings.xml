@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">KB Mapper</string>
-    <string name="service_desc">Reads physical keyboard keys and turns them into touch gestures for games.</string>
+    <string name="service_desc">Reads physical keyboard keys and and mouse and turns them into touch gestures for games.</string>
 </resources>
