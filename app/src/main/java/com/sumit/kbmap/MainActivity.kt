@@ -30,8 +30,10 @@ class MainActivity : Activity() {
         })
         root.addView(TextView(this).apply {
             text = "1) Enable the service in Accessibility settings.\n" +
-                "2) Open your game, press F8 to toggle mapping.\n" +
-                "3) Edit the layout below (x, y are screen fractions), Save. It reloads on every toggle."
+                "2) Switch to your game. A small KB Mapper panel floats on screen.\n" +
+                "3) Tap Edit layout, add buttons, drag them onto the game's buttons, tap one and press a key to bind it.\n" +
+                "4) Tap Done, then Mapping: ON (or press the ` key).\n" +
+                "Advanced: edit the raw JSON below."
             setPadding(0, pad / 2, 0, pad / 2)
         })
         root.addView(Button(this).apply {

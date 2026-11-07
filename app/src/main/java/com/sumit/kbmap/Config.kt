@@ -2,13 +2,14 @@ package com.sumit.kbmap
 
 import android.content.Context
 import android.view.KeyEvent
+import org.json.JSONArray
 import org.json.JSONObject
 
 class Bind(
     val type: String,
-    val key: Int,
-    val x: Float,
-    val y: Float,
+    var key: Int,
+    var x: Float,
+    var y: Float,
     val r: Float,
     val kUp: Int,
     val kDown: Int,
@@ -16,11 +17,42 @@ class Bind(
     val kRight: Int
 )
 
-class Config(val toggle: Int, val binds: List<Bind>) {
-    val keys: Set<Int> = binds
-        .flatMap { listOf(it.key, it.kUp, it.kDown, it.kLeft, it.kRight) }
-        .filter { it != 0 }
-        .toSet()
+class Config(var toggle: Int, val binds: MutableList<Bind>) {
+    val keys: Set<Int>
+        get() = binds
+            .flatMap { listOf(it.key, it.kUp, it.kDown, it.kLeft, it.kRight) }
+            .filter { it != 0 }
+            .toSet()
+
+    fun save(ctx: Context) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, toJson()).apply()
+    }
+
+    private fun rnd(v: Float) = Math.round(v * 1000) / 1000.0
+
+    fun toJson(): String {
+        val o = JSONObject()
+        o.put("toggle", KeyEvent.keyCodeToString(toggle))
+        val arr = JSONArray()
+        binds.forEach { b ->
+            val j = JSONObject()
+            j.put("type", b.type)
+            j.put("x", rnd(b.x))
+            j.put("y", rnd(b.y))
+            if (b.type == "joystick") {
+                j.put("r", rnd(b.r))
+                j.put("up", KeyEvent.keyCodeToString(b.kUp))
+                j.put("down", KeyEvent.keyCodeToString(b.kDown))
+                j.put("left", KeyEvent.keyCodeToString(b.kLeft))
+                j.put("right", KeyEvent.keyCodeToString(b.kRight))
+            } else {
+                j.put("key", KeyEvent.keyCodeToString(b.key))
+            }
+            arr.put(j)
+        }
+        o.put("binds", arr)
+        return o.toString(2)
+    }
 
     companion object {
         const val PREFS = "kb"
@@ -29,7 +61,7 @@ class Config(val toggle: Int, val binds: List<Bind>) {
         // x, y = screen fractions (0..1). r = joystick radius as fraction of the shorter screen side.
         // types: joystick (4 keys), hold (touch while key held), tap (short tap per key press)
         const val DEFAULT = """{
-  "toggle": "KEYCODE_F8",
+  "toggle": "KEYCODE_GRAVE",
   "binds": [
     {"type":"joystick","x":0.15,"y":0.72,"r":0.10,"up":"KEYCODE_W","down":"KEYCODE_S","left":"KEYCODE_A","right":"KEYCODE_D"},
     {"type":"hold","key":"KEYCODE_SPACE","x":0.88,"y":0.70},
@@ -59,7 +91,7 @@ class Config(val toggle: Int, val binds: List<Bind>) {
                 )
             }
             val t = kc(o, "toggle")
-            return Config(if (t == 0) KeyEvent.KEYCODE_F8 else t, list)
+            return Config(if (t == 0) KeyEvent.KEYCODE_GRAVE else t, list)
         }
 
         fun load(ctx: Context): Config {
