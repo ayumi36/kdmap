@@ -71,7 +71,10 @@ class Config(var toggle: Int, val binds: MutableList<Bind>) {
         const val DEFAULT = """{
   "toggle": "KEYCODE_GRAVE",
   "binds": [
-    {"type":"joystick","x":0.15,"y":0.72,"r":0.08,"up":"KEYCODE_W","down":"KEYCODE_S","left":"KEYCODE_A","right":"KEYCODE_D"},
+    {"type":"hold","key":"KEYCODE_W","x":0.15,"y":0.62},
+    {"type":"hold","key":"KEYCODE_A","x":0.09,"y":0.72},
+    {"type":"hold","key":"KEYCODE_S","x":0.15,"y":0.82},
+    {"type":"hold","key":"KEYCODE_D","x":0.21,"y":0.72},
     {"type":"fire","key":"KEYCODE_SPACE","x":0.80,"y":0.70},
     {"type":"tap","key":"KEYCODE_R","x":0.80,"y":0.50},
     {"type":"tap","key":"KEYCODE_E","x":0.72,"y":0.40}
@@ -89,6 +92,17 @@ class Config(var toggle: Int, val binds: MutableList<Bind>) {
             val list = ArrayList<Bind>()
             for (i in 0 until arr.length()) {
                 val b = arr.getJSONObject(i)
+                if (b.getString("type") == "joystick") {
+                    // old format: split into 4 separate hold buttons
+                    val jx = b.getDouble("x").toFloat()
+                    val jy = b.getDouble("y").toFloat()
+                    val jr = b.optDouble("r", 0.08).toFloat()
+                    list.add(Bind("hold", kc(b, "up"), jx, jy - jr, 0.08f, 0, 0, 0, 0))
+                    list.add(Bind("hold", kc(b, "down"), jx, jy + jr, 0.08f, 0, 0, 0, 0))
+                    list.add(Bind("hold", kc(b, "left"), jx - jr * 0.5f, jy, 0.08f, 0, 0, 0, 0))
+                    list.add(Bind("hold", kc(b, "right"), jx + jr * 0.5f, jy, 0.08f, 0, 0, 0, 0))
+                    continue
+                }
                 list.add(
                     Bind(
                         b.getString("type"), kc(b, "key"),

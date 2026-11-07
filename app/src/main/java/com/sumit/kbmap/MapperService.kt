@@ -236,10 +236,8 @@ class MapperService : AccessibilityService() {
 
         val addRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(chip("+Tap", 7) { addBtn("tap") })
-            addView(chip("+Hold", 7) { addBtn("hold") })
-            addView(chip("+Fire", 7) { addBtn("fire") })
-            addView(chip("+Joy", 7) { addBtn("joystick") })
+            addView(chip("+ Add Btn", 8) { addBtn("tap") })
+            addView(chip("Remove", 8) { selDel() })
         }
         tvToggle = chip("Toggle key: " + short(cfg.toggle), 7) {
             pendingToggle = true
@@ -255,7 +253,6 @@ class MapperService : AccessibilityService() {
             addView(chip("Key", 7) { sel?.let { startBind(it) } })
             addView(chip("Type", 7) { selType() })
             addView(chip("Color", 7) { selColor() })
-            addView(chip("Del", 7) { selDel() })
         }
         val r2 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -419,7 +416,8 @@ class MapperService : AccessibilityService() {
     }
 
     private fun selDel() {
-        val b = sel ?: return
+        val b = sel
+        if (b == null) { tvKey.text = "Select a button first"; return }
         cfg.binds.remove(b)
         sel = null
         changed()
@@ -460,16 +458,12 @@ class MapperService : AccessibilityService() {
     }
 
     private fun addBtn(type: String) {
-        val j = type == "joystick"
-        val b = Bind(
-            type, 0, 0.5f, 0.5f, 0.08f,
-            if (j) KeyEvent.KEYCODE_W else 0, if (j) KeyEvent.KEYCODE_S else 0,
-            if (j) KeyEvent.KEYCODE_A else 0, if (j) KeyEvent.KEYCODE_D else 0
-        )
+        val o = (cfg.binds.size % 6) * 0.04f
+        val b = Bind(type, 0, 0.45f + o, 0.40f + o, 0.08f, 0, 0, 0, 0)
         cfg.binds.add(b)
         sel = b
         changed()
-        if (!j) startBind(b)
+        startBind(b)
     }
 
     // ---------- keyboard ----------
